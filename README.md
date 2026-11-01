@@ -31,10 +31,12 @@ curl -fsSL https://raw.githubusercontent.com/neomikanagi/panther-x2-npu-vpu/main
 装好驱动后：
 
 ```bash
-sudo px2-npu-vpu dietpi --hostname panther-x2 --timezone Asia/Tokyo --reboot
+sudo px2-npu-vpu dietpi --hostname panther-x2 --timezone Asia/Tokyo
 ```
 
-它调用 DietPi 官方安装器，按「Generic device」转换：系统软件换成 DietPi 的精简集合，内核和引导一个字节不动，所以 NPU/VPU 照常。转换在后台独立运行（日志 `/root/px2-dietpi.log`），中途 SSH 会断，这是正常的：DietPi 先卸掉原来的 SSH，到重启后才启动新的。带 `--reboot` 会在转换完成后自动重启；第一次开机无人值守完成 DietPi 初始化，要十分钟左右。
+它调用 DietPi 官方安装器，按「Generic device」转换：系统软件换成 DietPi 的精简集合，内核和引导一个字节不动，所以 NPU/VPU 照常。转换在后台独立运行（日志 `/root/px2-dietpi.log`），大约半小时。中途 SSH 会断一阵，这是正常的：DietPi 卸掉原来的 OpenSSH，装好后立刻启动它的 Dropbear，用同一把密钥、同一个 IP 就能连回来（主机密钥会变）。
+
+转换完先不重启，它会写好 eth0 配置、打出一份重启前检查（`/lib`、网卡、fstab、引导文件、内核、SSH 各一行），全部 `ok` 再 `reboot`；第一次开机无人值守完成 DietPi 初始化，要十分钟左右。确认流程熟了可以加 `--reboot` 让它检查通过后自动重启。它还会启用 `px2-netrescue`：开机 3 分钟还没有可用的默认路由，就绕开网络配置，直接把 eth0 配回原来的地址并启动 SSH，免得无屏盒子失联。
 
 - SSH 换成 OpenSSH（`--ssh dropbear` 可改），`/root/.ssh/authorized_keys` 保留，重启后主机密钥会变。
 - `--password P` 设 root 密码，不设就是 DietPi 默认的 `dietpi`。

@@ -1,0 +1,10 @@
+[Unit]
+Description=Bring eth0 and SSH up by hand if the network config left the box unreachable
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/px2-netrescue
+
+[Install]
+WantedBy=multi-user.target

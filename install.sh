@@ -302,21 +302,84 @@ cmd_dietpi_stage2() {
 		conf AUTO_SETUP_NET_STATIC_GATEWAY "$gw"
 		conf AUTO_SETUP_NET_STATIC_DNS "${dns:-$gw}"
 	fi
-	systemctl enable -q px2lab-guard.service px2boot-confirm.service
+	# The installer leaves /etc/network/interfaces empty for DietPi's first boot
+	# to fill in. Do not bet a headless box on that: write eth0 now, matching
+	# dietpi.txt, and keep the address it has for the rescue fallback.
+	local cur_ip cur_gw
+	cur_ip=$(ip -4 -o addr show eth0 | awk '{print $4; exit}')
+	cur_gw=$(ip -4 route show default | awk '{print $3; exit}')
+	{
+		echo '# Location: /etc/network/interfaces'
+		echo '# Network settings can be changed via dietpi-network.'
+		echo 'source interfaces.d/*'
+		echo
+		echo 'auto eth0'
+		if [ -n "$ip" ]; then
+			printf 'iface eth0 inet static\naddress %s\nnetmask %s\ngateway %s\n' "$ip" "$mask" "$gw"
+		else
+			echo 'iface eth0 inet dhcp'
+		fi
+	} > /etc/network/interfaces
+	if [ -n "$ip" ]; then
+		printf 'nameserver %s\n' ${dns:-$gw} > /etc/resolv.conf
+	fi
+	mkdir -p /etc/px2-npu-vpu
+	if [ -n "$ip" ]; then
+		printf "IFACE=eth0\nFALLBACK_IP='%s/%s'\nFALLBACK_GW='%s'\n" "$ip" "$(ipcalc_bits "$mask")" "$gw"
+	else
+		printf "IFACE=eth0\nFALLBACK_IP='%s'\nFALLBACK_GW='%s'\n" "$cur_ip" "$cur_gw"
+	fi > /etc/px2-npu-vpu/netrescue.conf
+	systemctl enable -q px2lab-guard.service px2boot-confirm.service px2-netrescue.service
+	# DietPi only enables Dropbear and starts it on the next boot. Start it now:
+	# eth0 still has its address, so the box stays reachable for checking.
+	systemctl unmask dropbear 2> /dev/null || true
+	systemctl start dropbear || true
 	rm -f $DIETPI_ENV
+	dietpi_report
 	log "DietPi is prepared. The next boot finishes DietPi setup unattended (several minutes)."
 	[ -n "$pw" ] || log "root password is DietPi's default 'dietpi' (pass --password to set one)"
 	if [ "$reboot" = 1 ]; then
 		sync
 		systemctl reboot
+	else
+		log "check the report above, then reboot"
 	fi
+}
+
+ipcalc_bits() { # 255.255.255.0 -> 24
+	local bits=0 o
+	for o in ${1//./ }; do
+		while [ "$o" -gt 0 ]; do bits=$((bits + (o & 1))); o=$((o >> 1)); done
+	done
+	echo $bits
+}
+
+dietpi_report() {
+	local bad=0
+	chk() { if eval "$2" > /dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; bad=1; fi; }
+	echo "== pre-reboot check"
+	chk "/lib is a symlink to usr/lib" '[ "$(readlink /lib)" = usr/lib ]'
+	chk "eth0 in /etc/network/interfaces" 'grep -q "^iface eth0" /etc/network/interfaces'
+	chk "a DHCP client or static config" 'grep -q "inet static" /etc/network/interfaces || command -v dhclient || command -v dhcpcd'
+	chk "ifupdown installed" 'command -v ifup'
+	chk "Dropbear running on :22" 'systemctl is-active dropbear'
+	chk "authorized_keys present" '[ -s /root/.ssh/authorized_keys ]'
+	chk "fstab mounts / and /boot by UUID" 'grep -Eq "^UUID=.* / " /etc/fstab && grep -Eq "^UUID=.* /boot " /etc/fstab'
+	chk "ophub boot.scr, Image, uInitrd, DTB" '[ -f /boot/boot.scr ] && [ -e /boot/Image ] && [ -e /boot/uInitrd ] && [ -d /boot/dtb/rockchip ]'
+	chk "BSP kernel in /boot/bsp" '[ -s /boot/bsp/Image ] && [ -s /boot/bsp/uInitrd ] && [ -s /boot/bsp/default.scr ]'
+	chk "BSP modules present" '[ -d /usr/lib/modules/$(. $SHARE/manifest.env; echo $KERNEL) ]'
+	chk "px2 services enabled" 'systemctl is-enabled px2lab-guard px2boot-confirm px2-netrescue'
+	chk "dietpi.txt automated first boot" 'grep -q "^AUTO_SETUP_AUTOMATED=1" /boot/dietpi.txt'
+	echo "network file:"
+	sed 's/^/    /' /etc/network/interfaces
+	[ $bad = 0 ] || die "pre-reboot check failed; fix before rebooting"
 }
 
 cmd_uninstall() {
 	local dev
 	dev=$(emmc_dev)
 	px2boot disable 2>/dev/null || true
-	systemctl disable -q px2lab-guard.service px2boot-confirm.service 2>/dev/null || true
+	systemctl disable -q px2lab-guard.service px2boot-confirm.service px2-netrescue.service 2>/dev/null || true
 	if [ -f $SHARE/files.txt ]; then
 		xargs -d '\n' rm -f < $SHARE/files.txt
 	fi
