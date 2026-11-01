@@ -26,23 +26,6 @@ px2-npu-vpu accept
 curl -fsSL https://raw.githubusercontent.com/neomikanagi/panther-x2-npu-vpu/main/install.sh | sudo bash -s -- install --with-python
 ```
 
-## 转成 DietPi
-
-装好驱动后：
-
-```bash
-sudo px2-npu-vpu dietpi --hostname panther-x2 --timezone Asia/Tokyo
-```
-
-它调用 DietPi 官方安装器，按「Generic device」转换：系统软件换成 DietPi 的精简集合，内核和引导一个字节不动，所以 NPU/VPU 照常。转换在后台独立运行（日志 `/root/px2-dietpi.log`），大约半小时。中途 SSH 会断一阵，这是正常的：DietPi 卸掉原来的 OpenSSH，装好后立刻启动它的 Dropbear，用同一把密钥、同一个 IP 就能连回来（主机密钥会变）。
-
-转换完先不重启，它会写好 eth0 配置、打出一份重启前检查（`/lib`、网卡、fstab、引导文件、内核、SSH 各一行），全部 `ok` 再 `reboot`；第一次开机无人值守完成 DietPi 初始化，要十分钟左右。确认流程熟了可以加 `--reboot` 让它检查通过后自动重启。它还会启用 `px2-netrescue`：开机 3 分钟还没有可用的默认路由，就绕开网络配置，直接把 eth0 配回原来的地址并启动 SSH，免得无屏盒子失联。
-
-- SSH 换成 OpenSSH（`--ssh dropbear` 可改），`/root/.ssh/authorized_keys` 保留，重启后主机密钥会变。
-- `--password P` 设 root 密码，不设就是 DietPi 默认的 `dietpi`。
-- `--software "162 105"` 首次开机顺带用 DietPi 装软件（162 Docker、105 OpenSSH……）。
-- `--static-ip 10.10.10.40 --gateway 10.10.10.1 [--dns "10.10.10.1 8.8.8.8"]` 改用静态 IP；不设就沿用 DHCP，但 DietPi 换了 DHCP 客户端，路由器可能分给它一个新地址。
-
 ## 装好以后有什么
 
 | | 内容 |
@@ -65,7 +48,6 @@ sudo px2-npu-vpu dietpi --hostname panther-x2 --timezone Asia/Tokyo
 | `px2-npu-vpu accept` | 硬件验收 |
 | `px2-npu-vpu try [标签]` | 下一次启动只试一次这个版本，`accept` 通过才转正，失败自动回到原版本 |
 | `px2-npu-vpu update` | 有新的正式版就 `try` 它 |
-| `px2-npu-vpu dietpi` | 转成 DietPi |
 | `px2-npu-vpu uninstall` | 卸掉，回到 ophub 原版启动 |
 | `px2boot status / enable / disable` | 默认启动 BSP 还是 ophub 主线 |
 | `px2lab arm <标签>` | 下一次启动只走一次 `/boot/px2lab/trial-<标签>.scr`（调试用） |
@@ -80,7 +62,7 @@ U-Boot 先跑 `/boot/boot.scr.uimg`，它不启动内核就自动续跑 ophub �
 
 ## 跟进 ophub
 
-`track-ophub` 每天检查 ophub 的 `kernel_rk35xx`，有新的 6.1.x 就自动构建成预发布版（标签 `k<内核>-r<修订>`）。云端测不了硬件，所以预发布版在盒子上 `px2-npu-vpu try <标签>` 验收通过后再转成正式版；`install` 和 `update` 只拿正式版。
+`track-ophub` 每天检查 ophub 的 `kernel_rk35xx`，有新的 6.1.x 就自动构建成预发布版，标签就是内核版本（如 `k6.1.174`），一个内核一个版本。云端测不了硬件，所以预发布版在盒子上 `px2-npu-vpu try <标签>` 验收通过后再转成正式版；`install` 和 `update` 只拿正式版。
 
 内核必须是 Rockchip BSP 分支：RKNN 和 MPP 都依赖它的驱动，主线内核不行。目前跟 6.1.x；ophub 也有 5.10 和 6.12 的 rk35xx 内核，没测过。
 

@@ -23,15 +23,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          . ./versions.env
           kernel=$(gh api repos/ophub/kernel/releases/tags/kernel_rk35xx --jq '.assets[].name' |
             grep -E '^6\.1\.[0-9]+\.tar\.gz$' | sed 's/\.tar\.gz$//' | sort -V | tail -1)
           echo "kernel=$kernel" >> "$GITHUB_OUTPUT"
-          if gh release view "k$kernel-r$PKG_REV" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          if gh release view "k$kernel" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "new=false" >> "$GITHUB_OUTPUT"
           else
             echo "new=true" >> "$GITHUB_OUTPUT"
-            echo "ophub has $kernel, building k$kernel-r$PKG_REV as a prerelease"
+            echo "ophub has $kernel, building k$kernel as a prerelease"
           fi
 
   build:

@@ -10,9 +10,6 @@
 #   accept                    NPU/VPU hardware acceptance test
 #   try [T]                   boot a release once as a trial; promote it only if accept passes
 #   update                    try the latest release if it differs from the installed one
-#   dietpi [--hostname H] [--timezone Z] [--ssh openssh|dropbear] [--password P]
-#          [--software "162 ..."] [--static-ip IP --gateway GW [--dns "A B"]] [--reboot]
-#                             convert this system to DietPi, keeping the BSP kernel
 #   uninstall                 back to the plain ophub boot
 set -euo pipefail
 REPO=${PX2_REPO:-neomikanagi/panther-x2-npu-vpu}
@@ -232,154 +229,11 @@ cmd_update() {
 	fi
 }
 
-DIETPI_LOG=/root/px2-dietpi.log
-DIETPI_ENV=/root/px2-dietpi.env
-
-cmd_dietpi() {
-	local host=panther-x2 tz='' ssh=openssh pw='' sw='' ip='' gw='' mask=255.255.255.0 dns='' reboot=0
-	while [ $# -gt 0 ]; do
-		case $1 in
-		--hostname) host=$2; shift ;;
-		--timezone) tz=$2; shift ;;
-		--ssh) ssh=$2; shift ;;
-		--password) pw=$2; shift ;;
-		--software) sw=$2; shift ;;
-		--static-ip) ip=$2; shift ;;
-		--gateway) gw=$2; shift ;;
-		--netmask) mask=$2; shift ;;
-		--dns) dns=$2; shift ;;
-		--reboot) reboot=1 ;;
-		*) die "unknown option $1" ;;
-		esac
-		shift
-	done
-	[ -d /boot/dietpi ] && die "already DietPi"
-	[ -f $SHARE/manifest.env ] || die "install the drivers first (px2-npu-vpu install)"
-	grep -q '^VERSION_CODENAME=\(bookworm\|trixie\|forky\)' /etc/os-release || die "needs Debian 12 or newer"
-	[ -z "$ip" ] || [ -n "$gw" ] || die "--static-ip needs --gateway"
-	declare -p host tz ssh pw sw ip gw mask dns reboot > $DIETPI_ENV
-	chmod 600 $DIETPI_ENV
-	: > $DIETPI_LOG
-	# The installer purges the SSH server and D-Bus underneath this shell, so the
-	# whole conversion runs as its own unit; this side only follows the log.
-	systemd-run --unit=px2-dietpi --collect -p StandardOutput=append:$DIETPI_LOG -p StandardError=inherit \
-		/usr/local/sbin/px2-npu-vpu dietpi-stage2 > /dev/null
-	log "converting in the background (unit px2-dietpi, log $DIETPI_LOG); safe to disconnect"
-	tail -n +1 -f $DIETPI_LOG &
-	local t=$!
-	while systemctl is-active -q px2-dietpi 2> /dev/null; do sleep 5; done
-	sleep 1
-	kill $t 2> /dev/null || true
-	grep -q '^== DietPi is prepared' $DIETPI_LOG || die "conversion failed, see $DIETPI_LOG"
-}
-
-cmd_dietpi_stage2() {
-	local host tz ssh pw sw ip gw mask dns reboot inst=/root/dietpi-installer
-	# shellcheck disable=SC1090
-	. $DIETPI_ENV
-	log "running the official DietPi installer as 'Generic device' (kernel and boot are left alone)"
-	curl -fsSL -o $inst https://raw.githubusercontent.com/MichaIng/DietPi/master/.build/images/dietpi-installer
-	env TERM=dumb GITBRANCH=master IMAGE_CREATOR=panther-x2-npu-vpu \
-		PREIMAGE_INFO="ophub Armbian $(. /etc/os-release && echo "$VERSION_CODENAME") (Panther X2)" \
-		HW_MODEL=22 WIFI_REQUIRED=1 DISTRO_TARGET=auto bash $inst < /dev/null || true
-	grep -q 'Completed, disk can now be saved' $DIETPI_LOG || die "DietPi installer did not complete"
-	local idx=-2
-	[ "$ssh" = dropbear ] && idx=-1
-	conf() { sed -i "s|^#*$1=.*|$1=$2|" /boot/dietpi.txt; grep -q "^$1=" /boot/dietpi.txt || echo "$1=$2" >> /boot/dietpi.txt; }
-	conf AUTO_SETUP_AUTOMATED 1
-	conf AUTO_SETUP_HEADLESS 1
-	conf AUTO_SETUP_NET_HOSTNAME "$host"
-	conf AUTO_SETUP_SSH_SERVER_INDEX $idx
-	conf AUTO_SETUP_SWAPFILE_LOCATION zram
-	conf SURVEY_OPTED_IN 0
-	[ -n "$tz" ] && conf AUTO_SETUP_TIMEZONE "$tz"
-	[ -n "$pw" ] && conf AUTO_SETUP_GLOBAL_PASSWORD "$pw"
-	[ -n "$sw" ] && conf AUTO_SETUP_INSTALL_SOFTWARE_ID "$sw"
-	if [ -n "$ip" ]; then
-		conf AUTO_SETUP_NET_USESTATIC 1
-		conf AUTO_SETUP_NET_STATIC_IP "$ip"
-		conf AUTO_SETUP_NET_STATIC_MASK "$mask"
-		conf AUTO_SETUP_NET_STATIC_GATEWAY "$gw"
-		conf AUTO_SETUP_NET_STATIC_DNS "${dns:-$gw}"
-	fi
-	# The installer leaves /etc/network/interfaces empty for DietPi's first boot
-	# to fill in. Do not bet a headless box on that: write eth0 now, matching
-	# dietpi.txt, and keep the address it has for the rescue fallback.
-	local cur_ip cur_gw
-	cur_ip=$(ip -4 -o addr show eth0 | awk '{print $4; exit}')
-	cur_gw=$(ip -4 route show default | awk '{print $3; exit}')
-	{
-		echo '# Location: /etc/network/interfaces'
-		echo '# Network settings can be changed via dietpi-network.'
-		echo 'source interfaces.d/*'
-		echo
-		echo 'auto eth0'
-		if [ -n "$ip" ]; then
-			printf 'iface eth0 inet static\naddress %s\nnetmask %s\ngateway %s\n' "$ip" "$mask" "$gw"
-		else
-			echo 'iface eth0 inet dhcp'
-		fi
-	} > /etc/network/interfaces
-	if [ -n "$ip" ]; then
-		printf 'nameserver %s\n' ${dns:-$gw} > /etc/resolv.conf
-	fi
-	mkdir -p /etc/px2-npu-vpu
-	if [ -n "$ip" ]; then
-		printf "IFACE=eth0\nFALLBACK_IP='%s/%s'\nFALLBACK_GW='%s'\n" "$ip" "$(ipcalc_bits "$mask")" "$gw"
-	else
-		printf "IFACE=eth0\nFALLBACK_IP='%s'\nFALLBACK_GW='%s'\n" "$cur_ip" "$cur_gw"
-	fi > /etc/px2-npu-vpu/netrescue.conf
-	systemctl enable -q px2lab-guard.service px2boot-confirm.service px2-netrescue.service
-	# DietPi only enables Dropbear and starts it on the next boot. Start it now:
-	# eth0 still has its address, so the box stays reachable for checking.
-	systemctl unmask dropbear 2> /dev/null || true
-	systemctl start dropbear || true
-	rm -f $DIETPI_ENV
-	dietpi_report
-	log "DietPi is prepared. The next boot finishes DietPi setup unattended (several minutes)."
-	[ -n "$pw" ] || log "root password is DietPi's default 'dietpi' (pass --password to set one)"
-	if [ "$reboot" = 1 ]; then
-		sync
-		systemctl reboot
-	else
-		log "check the report above, then reboot"
-	fi
-}
-
-ipcalc_bits() { # 255.255.255.0 -> 24
-	local bits=0 o
-	for o in ${1//./ }; do
-		while [ "$o" -gt 0 ]; do bits=$((bits + (o & 1))); o=$((o >> 1)); done
-	done
-	echo $bits
-}
-
-dietpi_report() {
-	local bad=0
-	chk() { if eval "$2" > /dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; bad=1; fi; }
-	echo "== pre-reboot check"
-	chk "/lib is a symlink to usr/lib" '[ "$(readlink /lib)" = usr/lib ]'
-	chk "eth0 in /etc/network/interfaces" 'grep -q "^iface eth0" /etc/network/interfaces'
-	chk "a DHCP client or static config" 'grep -q "inet static" /etc/network/interfaces || command -v dhclient || command -v dhcpcd'
-	chk "ifupdown installed" 'command -v ifup'
-	chk "Dropbear running on :22" 'systemctl is-active dropbear'
-	chk "authorized_keys present" '[ -s /root/.ssh/authorized_keys ]'
-	chk "fstab mounts / and /boot by UUID" 'grep -Eq "^UUID=.* / " /etc/fstab && grep -Eq "^UUID=.* /boot " /etc/fstab'
-	chk "ophub boot.scr, Image, uInitrd, DTB" '[ -f /boot/boot.scr ] && [ -e /boot/Image ] && [ -e /boot/uInitrd ] && [ -d /boot/dtb/rockchip ]'
-	chk "BSP kernel in /boot/bsp" '[ -s /boot/bsp/Image ] && [ -s /boot/bsp/uInitrd ] && [ -s /boot/bsp/default.scr ]'
-	chk "BSP modules present" '[ -d /usr/lib/modules/$(. $SHARE/manifest.env; echo $KERNEL) ]'
-	chk "px2 services enabled" 'systemctl is-enabled px2lab-guard px2boot-confirm px2-netrescue'
-	chk "dietpi.txt automated first boot" 'grep -q "^AUTO_SETUP_AUTOMATED=1" /boot/dietpi.txt'
-	echo "network file:"
-	sed 's/^/    /' /etc/network/interfaces
-	[ $bad = 0 ] || die "pre-reboot check failed; fix before rebooting"
-}
-
 cmd_uninstall() {
 	local dev
 	dev=$(emmc_dev)
 	px2boot disable 2>/dev/null || true
-	systemctl disable -q px2lab-guard.service px2boot-confirm.service px2-netrescue.service 2>/dev/null || true
+	systemctl disable -q px2lab-guard.service px2boot-confirm.service 2>/dev/null || true
 	if [ -f $SHARE/files.txt ]; then
 		xargs -d '\n' rm -f < $SHARE/files.txt
 	fi
@@ -400,8 +254,6 @@ status) cmd_status ;;
 accept) exec $OPT/bin/accept ;;
 try) cmd_try "$@" ;;
 update) cmd_update ;;
-dietpi) cmd_dietpi "$@" ;;
-dietpi-stage2) cmd_dietpi_stage2 ;;
 uninstall) cmd_uninstall ;;
-*) sed -n '2,18p' "$0"; exit 2 ;;
+*) sed -n '2,13p' "$0"; exit 2 ;;
 esac

@@ -15,7 +15,7 @@ if [ "$kv" != "$KERNEL_VERSION" ]; then
 		python3 -c 'import json,sys; v=sys.argv[1]; a=[x for x in json.load(sys.stdin)["assets"] if x["name"]==v+".tar.gz"]; print(a[0]["digest"].split(":")[1])' "$kv")
 fi
 kver=$kv-rk35xx-ophub
-tag=k$kv-r$PKG_REV
+tag=k$kv
 work=$top/work
 root=$work/root
 dist=$top/dist
@@ -115,7 +115,7 @@ BUILT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
 echo "== pack"
-name=px2-npu-vpu-$kv-r$PKG_REV.tar.gz
+name=px2-npu-vpu-$kv.tar.gz
 repo=${GITHUB_REPOSITORY:-neomikanagi/panther-x2-npu-vpu}
 tar -C "$root" --owner=0 --group=0 --numeric-owner -czf "$dist/$name" boot etc opt usr
 (cd "$dist" && sha256sum "$name" > SHA256SUMS)
