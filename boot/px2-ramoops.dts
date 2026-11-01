@@ -1,0 +1,25 @@
+// RAM log shared by every kernel booted in the lab (6.18 normal, 6.1 BSP trials).
+// 0x110000 sits below the first System RAM bank (0x200000), so no Linux touches
+// it, and it is the address Rockchip's own BSP uses for ramoops on RK356x.
+// Every kernel must use identical sizes and ECC, or the zones will not line up.
+// ECC lets text survive the odd bit flip across a watchdog reset.
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/reserved-memory";
+		__overlay__ {
+			ramoops@110000 {
+				compatible = "ramoops";
+				reg = <0x0 0x110000 0x0 0xf0000>;
+				record-size = <0x20000>;
+				console-size = <0x80000>;
+				ftrace-size = <0x0>;
+				pmsg-size = <0x0>;
+				mem-type = <1>;
+				ecc-size = <16>;
+			};
+		};
+	};
+};

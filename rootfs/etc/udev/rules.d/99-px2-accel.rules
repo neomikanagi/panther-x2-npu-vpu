@@ -1,0 +1,9 @@
+# Let the video group use the Rockchip media blocks without root
+# (NPU is /dev/dri/renderD129, already group render).
+KERNEL=="mpp_service", MODE="0660", GROUP="video"
+KERNEL=="rga", MODE="0660", GROUP="video"
+SUBSYSTEM=="dma_heap", MODE="0660", GROUP="video"
+# The NPU is power-gated when idle; rknpu_ondemand misreads single-stream
+# inference (CPU-side input conversion between runs) as idle and stays at
+# 200 MHz, three times slower. Run it at full clock while it is powered.
+SUBSYSTEM=="devfreq", KERNEL=="fde40000.npu", ATTR{governor}="performance"

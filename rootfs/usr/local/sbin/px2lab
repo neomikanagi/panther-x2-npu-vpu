@@ -1,0 +1,52 @@
+#!/bin/bash
+# px2lab helper on the Panther X2 (/usr/local/sbin/px2lab).
+#   px2lab arm <tag>   select /boot/px2lab/trial-<tag>.scr and set the one-shot flag
+#   px2lab disarm      wipe the flag
+#   px2lab status      flag, last U-Boot register dump, current boot, RAM log
+set -eu
+flag_sector=24576   # 0x6000, zero gap between u-boot.itb and p1
+dump_sector=24577   # 0x6001
+
+# The eMMC is mmcblk0 under mainline and mmcblk1 under the BSP kernel.
+dev=
+for b in /sys/block/mmcblk[0-9]; do
+	n=${b##*/}
+	if [ "$(cat "$b/device/type" 2>/dev/null)" = MMC ] &&
+		[ "$(cat "$b/${n}p1/start" 2>/dev/null)" = 32768 ]; then
+		dev=/dev/$n
+		break
+	fi
+done
+
+check_layout() {
+	[ -n "$dev" ] || { echo "no eMMC with p1 at sector 32768" >&2; exit 1; }
+}
+
+case "${1:-status}" in
+arm)
+	check_layout
+	src=/boot/px2lab/trial-${2:?tag}.scr
+	[ -f "$src" ] || { echo "missing $src" >&2; exit 1; }
+	cp "$src" /boot/px2lab/trial.scr
+	sync
+	{ printf 'PX2LAB01'; head -c 504 /dev/zero; } |
+		dd of=$dev bs=512 seek=$flag_sector count=1 conv=notrunc,fsync status=none
+	echo "armed: $2"
+	;;
+disarm)
+	check_layout
+	head -c 512 /dev/zero | dd of=$dev bs=512 seek=$flag_sector count=1 conv=notrunc,fsync status=none
+	echo disarmed
+	;;
+status)
+	printf 'flag: '; dd if=$dev bs=512 skip=$flag_sector count=1 status=none | head -c 8 | od -An -c
+	echo 'u-boot dump (WDT 0x00.., CRU GLB at +0x100):'
+	dd if=$dev bs=512 skip=$dump_sector count=1 status=none | od -An -tx4 -w16 | head -20
+	echo "boot: $(grep -o 'px2lab=[^ ]*' /proc/cmdline || echo normal) $(uname -r) up $(cut -d' ' -f1 /proc/uptime)s"
+	ls -la /sys/fs/pstore/ /var/lib/systemd/pstore/ 2>/dev/null || true
+	;;
+*)
+	echo "usage: px2lab arm <tag> | disarm | status" >&2
+	exit 2
+	;;
+esac

@@ -1,0 +1,11 @@
+[Unit]
+Description=px2lab trial-boot guard
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/px2lab-guard
+
+[Install]
+WantedBy=sysinit.target

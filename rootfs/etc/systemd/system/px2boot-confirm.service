@@ -1,0 +1,11 @@
+[Unit]
+Description=Confirm a good BSP boot to the px2boot rollback state
+Wants=network-online.target
+After=network-online.target ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/px2boot confirm
+
+[Install]
+WantedBy=multi-user.target

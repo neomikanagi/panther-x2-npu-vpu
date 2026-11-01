@@ -1,0 +1,55 @@
+#!/bin/bash
+# px2lab-guard: started early by px2lab-guard.service.
+# Normal boot: copy whatever the RAM log (pstore) holds from the previous boot
+# to disk once ramoops has loaded; systemd-pstore checks too early and skips it.
+# Trial boot (px2lab=<tag>): keep dmesg on disk; for tag "cand" run the
+# candidate check (accept, then promote or not) and reboot; otherwise, if
+# nobody touches /run/px2lab-ok within 10 minutes, reboot. The one-shot flag
+# is already gone, so the next boot is the default one again.
+logs=/var/lib/px2-npu-vpu/logs
+tag=$(sed -n 's/.*px2lab=\([^ ]*\).*/\1/p' /proc/cmdline)
+
+if [ -z "$tag" ]; then
+	for _ in $(seq 90); do
+		[ -d /sys/module/ramoops ] && break
+		sleep 1
+	done
+	sleep 2
+	if [ -n "$(ls -A /sys/fs/pstore 2>/dev/null)" ]; then
+		d=$logs/pstore-$(date -u +%Y%m%dT%H%M%SZ)
+		mkdir -p "$d"
+		cp -a /sys/fs/pstore/. "$d/"
+		sync
+		echo "px2lab: saved previous-boot pstore to $d" > /dev/kmsg
+	fi
+	exit 0
+fi
+
+d=$logs/$(date -u +%Y%m%dT%H%M%SZ)-$tag-$(uname -r)
+mkdir -p "$d"
+echo "px2lab: guard up, tag=$tag" > /dev/kmsg
+
+if [ "$tag" = cand ] && [ -x /var/lib/px2-npu-vpu/cand/check ]; then
+	sleep 30
+	dmesg > "$d/dmesg.txt"
+	/var/lib/px2-npu-vpu/cand/check > "$d/cand-check.log" 2>&1
+	dmesg > "$d/dmesg.txt"
+	sync
+	systemctl reboot
+	exit 0
+fi
+
+for _ in $(seq 60); do
+	dmesg > "$d/dmesg.txt"
+	ip -br addr > "$d/ip.txt" 2>&1
+	sync
+	if [ -e /run/px2lab-ok ]; then
+		echo "px2lab: ok-file seen, guard done" > /dev/kmsg
+		exit 0
+	fi
+	sleep 10
+done
+journalctl -b --no-pager > "$d/journal.txt" 2>&1
+echo "px2lab: no ok-file after 600 s, rebooting to the default boot" > /dev/kmsg
+sync
+systemctl reboot --force || echo b > /proc/sysrq-trigger

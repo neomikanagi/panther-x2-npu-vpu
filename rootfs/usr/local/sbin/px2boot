@@ -1,0 +1,62 @@
+#!/bin/bash
+# px2boot (/usr/local/sbin/px2boot): default-boot switch for the Panther X2.
+#   px2boot enable    boot the BSP kernel (/boot/bsp) by default, with rollback
+#   px2boot disable   always boot the mainline boot.scr
+#   px2boot status    state sector and what is running now
+#   px2boot confirm   (px2boot-confirm.service) mark this BSP boot good
+# State lives in eMMC sector 0x6002, read by /boot/boot.scr.uimg:
+#   OKAY -> U-Boot writes PEND and boots BSP; PEND at boot -> FAIL + mainline.
+set -eu
+state_sector=24578  # 0x6002
+
+dev=
+for b in /sys/block/mmcblk[0-9]; do
+	n=${b##*/}
+	if [ "$(cat "$b/device/type" 2>/dev/null)" = MMC ] &&
+		[ "$(cat "$b/${n}p1/start" 2>/dev/null)" = 32768 ]; then
+		dev=/dev/$n
+		break
+	fi
+done
+[ -n "$dev" ] || { echo "no eMMC with p1 at sector 32768" >&2; exit 1; }
+
+state() { dd if=$dev bs=512 skip=$state_sector count=1 status=none | head -c 12; }
+put() {
+	{ printf '%s' "$1"; head -c $((512 - ${#1})) /dev/zero; } |
+		dd of=$dev bs=512 seek=$state_sector count=1 conv=notrunc,fsync status=none
+}
+
+case "${1:-status}" in
+enable)
+	for f in Image uInitrd rk3566-panther-x2.dtb default.scr; do
+		[ -s /boot/bsp/$f ] || { echo "missing /boot/bsp/$f" >&2; exit 1; }
+	done
+	put PX2BOOT1OKAY
+	echo "enabled: next boot is the BSP kernel"
+	;;
+disable)
+	put ""
+	echo "disabled: next boot is the mainline boot.scr"
+	;;
+confirm)
+	if grep -qw px2boot=bsp /proc/cmdline && [ "$(state)" = PX2BOOT1PEND ]; then
+		put PX2BOOT1OKAY
+		echo "px2boot: BSP boot confirmed" > /dev/kmsg
+	fi
+	;;
+status)
+	s=$(state | tr -c '[:print:]' '.')
+	case "$s" in
+	PX2BOOT1OKAY) d="enabled, last BSP boot confirmed" ;;
+	PX2BOOT1PEND) d="BSP boot in progress (not confirmed yet)" ;;
+	PX2BOOT1FAIL) d="ROLLED BACK: a BSP boot never confirmed; run 'px2boot enable' to retry" ;;
+	*) d="disabled" ;;
+	esac
+	echo "state: $s ($d)"
+	echo "running: $(uname -r) $(grep -o 'px2boot=[^ ]*\|px2lab=[^ ]*' /proc/cmdline || echo mainline-boot.scr)"
+	;;
+*)
+	echo "usage: px2boot enable | disable | status | confirm" >&2
+	exit 2
+	;;
+esac

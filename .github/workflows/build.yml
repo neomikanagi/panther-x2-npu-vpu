@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: ophub kernel_rk35xx version, e.g. 6.1.174 (empty = versions.env)
+        default: ''
+      release:
+        description: publish the result
+        type: choice
+        options: [none, prerelease, release]
+        default: none
+  workflow_call:
+    inputs:
+      kernel_version:
+        type: string
+        default: ''
+      release:
+        type: string
+        default: none
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+    outputs:
+      tag: ${{ steps.build.outputs.tag }}
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update -q
+          apt-get install -y -q --no-install-recommends ca-certificates curl git build-essential cmake \
+            device-tree-compiler u-boot-tools ffmpeg libjpeg-turbo-progs python3 kmod
+      - uses: actions/checkout@v4
+      - name: Build payload
+        id: build
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          bash build/build.sh "${{ inputs.kernel_version }}"
+          echo "tag=$(cat dist/TAG)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: inputs.release == 'prerelease' || inputs.release == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          KIND: ${{ inputs.release }}
+        run: |
+          pre=; [ "$KIND" = prerelease ] && pre=--prerelease
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "$TAG" --notes-file dist/NOTES.md $pre
+          fi
