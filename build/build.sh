@@ -31,15 +31,16 @@ echo "== kernel $kver"
 fetch "https://github.com/ophub/kernel/releases/download/kernel_rk35xx/$kv.tar.gz" "$KERNEL_SHA256" "$work/kernel.tar.gz"
 tar -C "$work" -xzf "$work/kernel.tar.gz"
 (cd "$work/$kv" && sha256sum -c --quiet sha256sums)
-mkdir -p "$root/boot/bsp" "$root/boot/px2lab" "$root/boot/overlay-user" "$root/lib/modules"
+mkdir -p "$root/boot/bsp" "$root/boot/px2lab" "$root/boot/overlay-user" "$root/usr/lib/modules"
 tar -C "$work" -xzf "$work/$kv/boot-$kver.tar.gz" "vmlinuz-$kver" "uInitrd-$kver"
 tar -C "$work" -xzf "$work/$kv/dtb-rockchip-$kver.tar.gz" rk3566-panther-x2.dtb
 install -m 644 "$work/vmlinuz-$kver" "$root/boot/bsp/Image"
 install -m 644 "$work/uInitrd-$kver" "$root/boot/bsp/uInitrd"
 install -m 644 "$work/rk3566-panther-x2.dtb" "$root/boot/px2lab/rk3566-panther-x2.stock.dtb"
 bash build/mkdtb.sh "$work/rk3566-panther-x2.dtb" "$root/boot/bsp/rk3566-panther-x2.dtb"
-tar -C "$root/lib/modules" -xzf "$work/$kv/modules-$kver.tar.gz"
-[ -d "$root/lib/modules/$kver" ] || { echo "modules tarball has no $kver" >&2; exit 1; }
+# Debian 13 is merged-/usr: /lib is a symlink to usr/lib, so modules go under usr/.
+tar -C "$root/usr/lib/modules" -xzf "$work/$kv/modules-$kver.tar.gz"
+[ -d "$root/usr/lib/modules/$kver" ] || { echo "modules tarball has no $kver" >&2; exit 1; }
 
 echo "== U-Boot scripts"
 mkscr() { mkimage -q -C none -A arm64 -T script -n "$1" -d "$2" "$3"; }
@@ -116,7 +117,7 @@ EOF
 echo "== pack"
 name=px2-npu-vpu-$kv-r$PKG_REV.tar.gz
 repo=${GITHUB_REPOSITORY:-neomikanagi/panther-x2-npu-vpu}
-tar -C "$root" --owner=0 --group=0 --numeric-owner -czf "$dist/$name" boot etc lib opt usr
+tar -C "$root" --owner=0 --group=0 --numeric-owner -czf "$dist/$name" boot etc opt usr
 (cd "$dist" && sha256sum "$name" > SHA256SUMS)
 echo "$tag" > "$dist/TAG"
 cat > "$dist/NOTES.md" <<EOF

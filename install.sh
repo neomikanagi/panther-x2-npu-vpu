@@ -119,10 +119,17 @@ install_python() { # rknn-toolkit-lite2 ships cp312 wheels only; Debian 13 has 3
 }
 
 install_payload() { # payload.tar.gz
-	local p=$1 kver
+	local p=$1 kver top
+	# Only these top-level trees. On merged-/usr systems /lib, /bin, /sbin are
+	# symlinks into /usr; a payload entry under them would let tar replace the
+	# symlink with a directory and take the dynamic linker away.
+	for top in $(tar -tzf "$p" | cut -d/ -f1 | sort -u); do
+		case $top in boot | etc | opt | usr) ;; *) die "payload has unexpected top-level entry '$top'" ;; esac
+	done
 	tar -tzf "$p" | grep -v '/$' | sed 's|^|/|' > /tmp/px2-files.$$
-	# --no-overwrite-dir: never touch the mode/owner of existing directories (/, /boot, /etc ...)
-	tar -C / --no-overwrite-dir --no-same-owner -xzf "$p"
+	# --no-overwrite-dir: never touch the mode/owner of existing directories (/, /boot, /etc ...);
+	# --keep-directory-symlink: never replace a symlink to a directory.
+	tar -C / --no-overwrite-dir --keep-directory-symlink --no-same-owner -xzf "$p"
 	mkdir -p $SHARE
 	mv /tmp/px2-files.$$ $SHARE/files.txt
 	. $SHARE/manifest.env
@@ -192,7 +199,7 @@ cmd_try() { # tag: boot it once from /boot/px2lab/cand, promote on PASS
 	tar -C "$dir/x" -xzf "$file" boot/bsp usr/share/px2-npu-vpu/manifest.env
 	kver=$(. "$dir/x/usr/share/px2-npu-vpu/manifest.env" && echo "$KERNEL")
 	cp "$dir/x/boot/bsp/Image" "$dir/x/boot/bsp/uInitrd" "$dir/x/boot/bsp/rk3566-panther-x2.dtb" /boot/px2lab/cand/
-	tar -C / --no-overwrite-dir --no-same-owner -xzf "$file" "lib/modules/$kver" boot/px2lab/trial-cand.scr
+	tar -C / --no-overwrite-dir --keep-directory-symlink --no-same-owner -xzf "$file" "usr/lib/modules/$kver" boot/px2lab/trial-cand.scr
 	depmod -a "$kver"
 	rm -rf "$dir/x"
 	cat > "$dir/check" <<EOF
