@@ -31,11 +31,15 @@ curl -fsSL https://raw.githubusercontent.com/neomikanagi/panther-x2-npu-vpu/main
 装好驱动后：
 
 ```bash
-sudo px2-npu-vpu dietpi --hostname panther-x2 --timezone Asia/Tokyo
-sudo reboot
+sudo px2-npu-vpu dietpi --hostname panther-x2 --timezone Asia/Tokyo --reboot
 ```
 
-它调用 DietPi 官方安装器，按「Generic device」转换：系统软件换成 DietPi 的精简集合，内核和引导一个字节不动，所以 NPU/VPU 照常。第一次开机无人值守完成 DietPi 初始化，要几分钟。SSH 换成 OpenSSH（`--ssh dropbear` 可改），`/root/.ssh/authorized_keys` 保留；root 密码是 DietPi 默认的 `dietpi`，请改掉或只用密钥登录。
+它调用 DietPi 官方安装器，按「Generic device」转换：系统软件换成 DietPi 的精简集合，内核和引导一个字节不动，所以 NPU/VPU 照常。转换在后台独立运行（日志 `/root/px2-dietpi.log`），中途 SSH 会断，这是正常的：DietPi 先卸掉原来的 SSH，到重启后才启动新的。带 `--reboot` 会在转换完成后自动重启；第一次开机无人值守完成 DietPi 初始化，要十分钟左右。
+
+- SSH 换成 OpenSSH（`--ssh dropbear` 可改），`/root/.ssh/authorized_keys` 保留，重启后主机密钥会变。
+- `--password P` 设 root 密码，不设就是 DietPi 默认的 `dietpi`。
+- `--software "162 105"` 首次开机顺带用 DietPi 装软件（162 Docker、105 OpenSSH……）。
+- `--static-ip 10.10.10.40 --gateway 10.10.10.1 [--dns "10.10.10.1 8.8.8.8"]` 改用静态 IP；不设就沿用 DHCP，但 DietPi 换了 DHCP 客户端，路由器可能分给它一个新地址。
 
 ## 装好以后有什么
 

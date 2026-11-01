@@ -47,7 +47,7 @@ confirm)
 status)
 	s=$(state | tr -c '[:print:]' '.')
 	case "$s" in
-	PX2BOOT1OKAY) d="enabled, last BSP boot confirmed" ;;
+	PX2BOOT1OKAY) d="enabled: boots the BSP kernel, last BSP boot confirmed or none yet" ;;
 	PX2BOOT1PEND) d="BSP boot in progress (not confirmed yet)" ;;
 	PX2BOOT1FAIL) d="ROLLED BACK: a BSP boot never confirmed; run 'px2boot enable' to retry" ;;
 	*) d="disabled" ;;

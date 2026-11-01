@@ -10,7 +10,8 @@
 #   accept                    NPU/VPU hardware acceptance test
 #   try [T]                   boot a release once as a trial; promote it only if accept passes
 #   update                    try the latest release if it differs from the installed one
-#   dietpi [--hostname H] [--timezone Z] [--ssh openssh|dropbear]
+#   dietpi [--hostname H] [--timezone Z] [--ssh openssh|dropbear] [--password P]
+#          [--software "162 ..."] [--static-ip IP --gateway GW [--dns "A B"]] [--reboot]
 #                             convert this system to DietPi, keeping the BSP kernel
 #   uninstall                 back to the plain ophub boot
 set -euo pipefail
@@ -71,7 +72,8 @@ fetch_release() { # tag dir -> prints payload path
 	name=${tarurl##*/}
 	mkdir -p "$2"
 	curl -fsSL --retry 3 -o "$2/SHA256SUMS" "$sumurl"
-	curl -fL --retry 3 --progress-bar -o "$2/$name" "$tarurl" >&2
+	local bar=-s; [ -t 2 ] && bar=--progress-bar
+	curl -fL --retry 3 $bar -o "$2/$name" "$tarurl" >&2
 	(cd "$2" && sha256sum -c --quiet SHA256SUMS) >&2 || die "checksum mismatch for $name"
 	echo "$2/$name"
 }
@@ -230,13 +232,23 @@ cmd_update() {
 	fi
 }
 
+DIETPI_LOG=/root/px2-dietpi.log
+DIETPI_ENV=/root/px2-dietpi.env
+
 cmd_dietpi() {
-	local host=panther-x2 tz='' ssh=openssh
+	local host=panther-x2 tz='' ssh=openssh pw='' sw='' ip='' gw='' mask=255.255.255.0 dns='' reboot=0
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--hostname) host=$2; shift ;;
 		--timezone) tz=$2; shift ;;
 		--ssh) ssh=$2; shift ;;
+		--password) pw=$2; shift ;;
+		--software) sw=$2; shift ;;
+		--static-ip) ip=$2; shift ;;
+		--gateway) gw=$2; shift ;;
+		--netmask) mask=$2; shift ;;
+		--dns) dns=$2; shift ;;
+		--reboot) reboot=1 ;;
 		*) die "unknown option $1" ;;
 		esac
 		shift
@@ -244,16 +256,33 @@ cmd_dietpi() {
 	[ -d /boot/dietpi ] && die "already DietPi"
 	[ -f $SHARE/manifest.env ] || die "install the drivers first (px2-npu-vpu install)"
 	grep -q '^VERSION_CODENAME=\(bookworm\|trixie\|forky\)' /etc/os-release || die "needs Debian 12 or newer"
+	[ -z "$ip" ] || [ -n "$gw" ] || die "--static-ip needs --gateway"
+	declare -p host tz ssh pw sw ip gw mask dns reboot > $DIETPI_ENV
+	chmod 600 $DIETPI_ENV
+	: > $DIETPI_LOG
+	# The installer purges the SSH server and D-Bus underneath this shell, so the
+	# whole conversion runs as its own unit; this side only follows the log.
+	systemd-run --unit=px2-dietpi --collect -p StandardOutput=append:$DIETPI_LOG -p StandardError=inherit \
+		/usr/local/sbin/px2-npu-vpu dietpi-stage2 > /dev/null
+	log "converting in the background (unit px2-dietpi, log $DIETPI_LOG); safe to disconnect"
+	tail -n +1 -f $DIETPI_LOG &
+	local t=$!
+	while systemctl is-active -q px2-dietpi 2> /dev/null; do sleep 5; done
+	sleep 1
+	kill $t 2> /dev/null || true
+	grep -q '^== DietPi is prepared' $DIETPI_LOG || die "conversion failed, see $DIETPI_LOG"
+}
+
+cmd_dietpi_stage2() {
+	local host tz ssh pw sw ip gw mask dns reboot inst=/root/dietpi-installer
+	# shellcheck disable=SC1090
+	. $DIETPI_ENV
 	log "running the official DietPi installer as 'Generic device' (kernel and boot are left alone)"
-	local inst=/root/dietpi-installer log=/root/px2-dietpi-installer.log
 	curl -fsSL -o $inst https://raw.githubusercontent.com/MichaIng/DietPi/master/.build/images/dietpi-installer
-	# Detached from this shell: the installer swaps the SSH server underneath us.
-	systemd-run --unit=px2-dietpi-installer --collect --wait --pipe -E TERM=dumb \
-		-E GITBRANCH=master -E IMAGE_CREATOR=panther-x2-npu-vpu \
-		-E PREIMAGE_INFO="ophub Armbian $(. /etc/os-release && echo "$VERSION_CODENAME") (Panther X2)" \
-		-E HW_MODEL=22 -E WIFI_REQUIRED=1 -E DISTRO_TARGET=auto \
-		bash $inst > $log 2>&1 < /dev/null || die "DietPi installer failed, see $log"
-	grep -q 'Completed, disk can now be saved' $log || die "DietPi installer did not complete, see $log"
+	env TERM=dumb GITBRANCH=master IMAGE_CREATOR=panther-x2-npu-vpu \
+		PREIMAGE_INFO="ophub Armbian $(. /etc/os-release && echo "$VERSION_CODENAME") (Panther X2)" \
+		HW_MODEL=22 WIFI_REQUIRED=1 DISTRO_TARGET=auto bash $inst < /dev/null || true
+	grep -q 'Completed, disk can now be saved' $DIETPI_LOG || die "DietPi installer did not complete"
 	local idx=-2
 	[ "$ssh" = dropbear ] && idx=-1
 	conf() { sed -i "s|^#*$1=.*|$1=$2|" /boot/dietpi.txt; grep -q "^$1=" /boot/dietpi.txt || echo "$1=$2" >> /boot/dietpi.txt; }
@@ -262,11 +291,25 @@ cmd_dietpi() {
 	conf AUTO_SETUP_NET_HOSTNAME "$host"
 	conf AUTO_SETUP_SSH_SERVER_INDEX $idx
 	conf AUTO_SETUP_SWAPFILE_LOCATION zram
-	[ -n "$tz" ] && conf AUTO_SETUP_TIMEZONE "$tz"
 	conf SURVEY_OPTED_IN 0
+	[ -n "$tz" ] && conf AUTO_SETUP_TIMEZONE "$tz"
+	[ -n "$pw" ] && conf AUTO_SETUP_GLOBAL_PASSWORD "$pw"
+	[ -n "$sw" ] && conf AUTO_SETUP_INSTALL_SOFTWARE_ID "$sw"
+	if [ -n "$ip" ]; then
+		conf AUTO_SETUP_NET_USESTATIC 1
+		conf AUTO_SETUP_NET_STATIC_IP "$ip"
+		conf AUTO_SETUP_NET_STATIC_MASK "$mask"
+		conf AUTO_SETUP_NET_STATIC_GATEWAY "$gw"
+		conf AUTO_SETUP_NET_STATIC_DNS "${dns:-$gw}"
+	fi
 	systemctl enable -q px2lab-guard.service px2boot-confirm.service
-	log "DietPi is prepared. Reboot: the first boot finishes DietPi setup unattended (a few minutes)."
-	log "root password is DietPi's default 'dietpi' unless AUTO_SETUP_GLOBAL_PASSWORD is set in /boot/dietpi.txt."
+	rm -f $DIETPI_ENV
+	log "DietPi is prepared. The next boot finishes DietPi setup unattended (several minutes)."
+	[ -n "$pw" ] || log "root password is DietPi's default 'dietpi' (pass --password to set one)"
+	if [ "$reboot" = 1 ]; then
+		sync
+		systemctl reboot
+	fi
 }
 
 cmd_uninstall() {
@@ -295,6 +338,7 @@ accept) exec $OPT/bin/accept ;;
 try) cmd_try "$@" ;;
 update) cmd_update ;;
 dietpi) cmd_dietpi "$@" ;;
+dietpi-stage2) cmd_dietpi_stage2 ;;
 uninstall) cmd_uninstall ;;
-*) sed -n '2,17p' "$0"; exit 2 ;;
+*) sed -n '2,18p' "$0"; exit 2 ;;
 esac
